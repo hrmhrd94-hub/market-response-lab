@@ -35,6 +35,14 @@ TZ_CASES = [
     ("TZ-KR-HISTORICAL-AFTER", "1961-08-10", "00:45", "Asia/Seoul", "UNAMBIGUOUS_IF_TZDB_RESOLVES"),
 ]
 
+GEOCODE_QUERIES = [
+    "경상남도 함양군, 대한민국",
+    "함양군, 경상남도, 대한민국",
+    "함양군, 경상남도",
+    "Hamyang-gun, Gyeongsangnam-do, South Korea",
+    "Hamyang County, South Korea",
+]
+
 THRESHOLD_DEG = 0.1
 
 
@@ -122,9 +130,9 @@ def run_tz_case(case):
     }
 
 
-def nominatim_hamyang():
+def query_nominatim(query: str):
     params = {
-        "q": "경상남도 함양군, 대한민국",
+        "q": query,
         "format": "jsonv2",
         "limit": "5",
         "addressdetails": "1",
@@ -132,23 +140,59 @@ def nominatim_hamyang():
         "countrycodes": "kr",
     }
     url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": "NCOS-independent-validation/1.0"})
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "NCOS-independent-validation/1.1",
+        "Accept": "application/json",
+    })
     with urllib.request.urlopen(req, timeout=30) as r:
         data = json.load(r)
-    if not data:
-        return {"passed": False, "error": "NO_CANDIDATE"}
-    first = data[0]
+    return data if isinstance(data, list) else []
+
+
+def nominatim_hamyang():
+    attempts = []
+    selected = None
+    selected_query = None
+    for query in GEOCODE_QUERIES:
+        try:
+            data = query_nominatim(query)
+            attempts.append({
+                "query": query,
+                "candidate_count": len(data),
+                "first_display_name": data[0].get("display_name") if data else None,
+                "error": None,
+            })
+            if data:
+                selected = data[0]
+                selected_query = query
+                break
+        except Exception as exc:
+            attempts.append({
+                "query": query,
+                "candidate_count": 0,
+                "first_display_name": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+    if selected is None:
+        return {"passed": False, "error": "NO_CANDIDATE_AFTER_ORDERED_FALLBACKS", "query_attempts": attempts}
+    address = selected.get("address") or {}
+    country_code = str(address.get("country_code") or "").lower()
+    country_ok = country_code == "kr"
     return {
-        "passed": True,
-        "display_name": first.get("display_name"),
-        "lat": first.get("lat"),
-        "lon": first.get("lon"),
-        "osm_type": first.get("osm_type"),
-        "osm_id": first.get("osm_id"),
-        "place_id": first.get("place_id"),
-        "type": first.get("type"),
-        "class": first.get("class"),
-        "address": first.get("address"),
+        "passed": country_ok,
+        "selected_query": selected_query,
+        "query_attempts": attempts,
+        "display_name": selected.get("display_name"),
+        "lat": selected.get("lat"),
+        "lon": selected.get("lon"),
+        "osm_type": selected.get("osm_type"),
+        "osm_id": selected.get("osm_id"),
+        "place_id": selected.get("place_id"),
+        "type": selected.get("type"),
+        "class": selected.get("class"),
+        "address": address,
+        "country_code": country_code,
+        "country_gate_pass": country_ok,
     }
 
 
@@ -178,15 +222,13 @@ def main():
 
     tz = [run_tz_case(x) for x in TZ_CASES]
     tz_pass = all(x["passed"] for x in tz)
-    self_utc_pass = next(x for x in tz if x["id"] == "TZ-KR-1975-SELF")["utc"].startswith("1975-04-05T01:30:00") if tz_pass else False
+    self_case = next(x for x in tz if x["id"] == "TZ-KR-1975-SELF")
+    self_utc_pass = bool(self_case.get("utc") and self_case["utc"].startswith("1975-04-05T01:30:00")) if tz_pass else False
 
-    try:
-        geo = nominatim_hamyang()
-    except Exception as exc:
-        geo = {"passed": False, "error": f"{type(exc).__name__}: {exc}"}
+    geo = nominatim_hamyang()
 
     out = {
-        "schema_version": "NCOS_INDEPENDENT_PUBLIC_BOUNDARY_VERIFIER_V1",
+        "schema_version": "NCOS_INDEPENDENT_PUBLIC_BOUNDARY_VERIFIER_V1_1",
         "status": "PASS" if astro_pass and tz_pass and self_utc_pass and geo.get("passed") else "FAIL",
         "astronomy": {
             "primary_engine": "SWISS_EPHEMERIS",
@@ -219,11 +261,13 @@ def main():
         "timezone_pass": tz_pass,
         "self_utc_pass": self_utc_pass,
         "geocode_pass": geo.get("passed", False),
+        "geocode_selected_query": geo.get("selected_query"),
         "geocode_display_name": geo.get("display_name"),
         "geocode_lat": geo.get("lat"),
         "geocode_lon": geo.get("lon"),
         "geocode_osm_type": geo.get("osm_type"),
         "geocode_osm_id": geo.get("osm_id"),
+        "query_attempts": geo.get("query_attempts"),
     }, ensure_ascii=False))
     if out["status"] != "PASS":
         raise SystemExit(1)
