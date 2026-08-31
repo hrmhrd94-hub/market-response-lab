@@ -1,0 +1,40 @@
+name: NCOS Independent Boundary Verifier
+
+on:
+  push:
+    branches:
+      - ncos-independent-astro-verifier-20260901
+    paths:
+      - 'ncos_verifier/**'
+      - '.github/workflows/ncos-independent-boundary-verifier.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install independent astronomy engines
+        run: python -m pip install --disable-pip-version-check 'astropy==8.0.1' pyswisseph
+
+      - name: Run preregistered astronomy timezone and geocode checks
+        run: python ncos_verifier/independent_boundary_gate.py
+
+      - name: Upload validation result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ncos-independent-boundary-validation
+          path: validation_result.json
+          if-no-files-found: warn
